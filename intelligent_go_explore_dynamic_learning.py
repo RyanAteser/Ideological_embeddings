@@ -127,6 +127,13 @@ def evaluate_model(eval_texts, eval_labels, model, tokenizer):
     disp = ConfusionMatrixDisplay(confusion_matrix=conf_matrix, display_labels=["Pro-Israeli", "Pro-Palestine"])
     disp.plot(cmap='Blues')
     plt.show()
+def is_novel(position, archive, threshold=0.5):
+    position_array = np.array(position, dtype=float)
+    for archived_array in archive:
+        archived_array = np.array(archived_array, dtype=float)
+        if np.linalg.norm(position_array - archived_array) < threshold:
+            return False
+    return True
 
 # Dynamic Learning with Exploration and GPT-2 Feedback
 def dynamic_learning_with_gpt2(corpus, labels, model, tokenizer, epochs=5, exploration_threshold=0.50):
@@ -155,7 +162,7 @@ def dynamic_learning_with_gpt2(corpus, labels, model, tokenizer, epochs=5, explo
 
 if __name__ == "__main__":
     # Load the corpus and labels from the text file
-    corpus, labels = load_corpus_and_labels('transcript_benchmark.txt')
+    corpus, labels = load_corpus_and_labels('transcript_variations.txt')
 
     print(f"Loaded {len(corpus)} samples.")
 
@@ -206,3 +213,4 @@ if __name__ == "__main__":
 
     # Execute dynamic learning with GPT-2 feedback
     dynamic_learning_with_gpt2(corpus, labels, model, tokenizer)
+
