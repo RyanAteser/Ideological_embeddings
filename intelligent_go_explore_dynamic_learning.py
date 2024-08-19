@@ -1,97 +1,69 @@
 import os
-import numpy as np
-import csv
-from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.decomposition import LatentDirichletAllocation
-import matplotlib.pyplot as plt
-from collections import defaultdict
-from transformers import BertTokenizer, BertForSequenceClassification, Trainer, TrainingArguments
 import torch
-from torch.utils.data import Dataset
-import requests
-from bs4 import BeautifulSoup
+import numpy as np
+import seaborn as sns
+from sklearn.metrics import confusion_matrix, precision_recall_fscore_support, accuracy_score, ConfusionMatrixDisplay, classification_report
+from transformers import BertTokenizer, BertForSequenceClassification, Trainer, TrainingArguments, GPT2Tokenizer, GPT2LMHeadModel
+from torch.utils.data import Dataset, DataLoader
+from collections import defaultdict
 import pandas as pd
+from sklearn.model_selection import train_test_split
+import re
+import matplotlib.pyplot as plt
 
-# Check if NumPy is installed
-try:
-    print("NumPy version:", np.__version__)
-except ImportError:
-    print("NumPy is not installed. Please install it using 'pip install numpy'.")
+# Check if GPU is available
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
 
-# Function to scrape news articles
-def scrape_news(url):
-    response = requests.get(url)
-    soup = BeautifulSoup(response.content, 'html.parser')
-    articles = soup.find_all('article')
-    return [article.get_text() for article in articles]
+# Function to query GPT-2 for ideology
+def query_gpt2(text):
+    tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+    model = GPT2LMHeadModel.from_pretrained("gpt2").to(device)
 
-# List of news websites and their ideological leanings
-news_sources = {
-    'Fox News': 'Conservatism',
-    'CNN': 'Progressivism',
-    'BBC': 'Moderate'
-}
+    input_text = f"Identify the ideology of the following sentence in one word (Pro-Israeli, Pro-Palestine, Neutral, etc.): '{text}'"
+    inputs = tokenizer.encode(input_text, return_tensors="pt").to(device)
 
-# Example URLs (replace with actual URLs of the news sources)
-urls = {
-    'Fox News': 'https://www.foxnews.com/',
-    'CNN': 'https://www.cnn.com/',
-    'BBC': 'https://www.bbc.com/'
-}
+    outputs = model.generate(
+        inputs,
+        max_new_tokens=10,
+        num_return_sequences=5,
+        pad_token_id=tokenizer.eos_token_id,
+        temperature=1.0,
+        top_p=0.85,
+        do_sample=True
+    )
 
-# Collect and annotate data
-data = []
-for source, url in urls.items():
-    articles = scrape_news(url)
-    for article in articles:
-        data.append({'text': article, 'ideology': news_sources[source]})
+    output_texts = [tokenizer.decode(output, skip_special_tokens=True).strip() for output in outputs]
+    print(f"Generated Outputs: {output_texts}")
 
-# Convert to DataFrame and save to CSV
-df = pd.DataFrame(data)
-df.to_csv('news_articles.csv', index=False)
-print("Data collection and annotation completed.")
+    possible_ideologies = ["Pro-Israeli", "Pro-Palestine", "Neutral", "Neutral, leans Pro-Israeli", "Neutral, leans Pro-Palestine"]
 
-# Load the collected corpus from the CSV file
-df = pd.read_csv('news_articles.csv')
-corpus = df['text'].tolist()
-ideologies = df['ideology'].tolist()
+    for output_text in output_texts:
+        for ideology in possible_ideologies:
+            if ideology in output_text:
+                return ideology
 
-# Define the number of topics (K) based on the number of unique ideologies
-K = len(set(ideologies))
+    return output_texts[0]
 
-# Vectorize the corpus and fit LDA to identify topics
-print("Vectorizing the corpus and fitting LDA...")
-vectorizer = CountVectorizer(stop_words='english', max_df=0.95, min_df=2, max_features=1000)
-X = vectorizer.fit_transform(corpus)
-lda = LatentDirichletAllocation(n_components=K, random_state=0, learning_decay=0.7)
-X_topics = lda.fit_transform(X)
-topic_words = lda.components_
+# Function to read the corpus and labels from a text file with labels in parentheses
+def load_corpus_and_labels(file_path):
+    corpus = []
+    labels = []
+    label_map = {
+        "Pro-Israeli": 0,
+        "Pro-Palestine": 1
+    }
 
-# Display the topic words for each topic
-print("Topic words per topic:")
-dynamic_ideology_labels = {}
-for i, topic_dist in enumerate(topic_words):
-    topic_words_list = [vectorizer.get_feature_names_out()[j] for j in topic_dist.argsort()[:-10 - 1:-1]]
-    dynamic_ideology_labels[i] = ', '.join(topic_words_list)
-    print(f"Topic {i}: {dynamic_ideology_labels[i]}")
+    with open(file_path, 'r') as f:
+        for line in f:
+            match = re.match(r"^(.*?):\s+(.*)$", line.strip())
+            if match:
+                label, text = match.groups()
+                if label in label_map:
+                    labels.append(label_map[label])
+                    corpus.append(text)
 
-# Manually add ideologies with descriptions
-manual_ideologies = {
-    0: 'Conservatism',
-    1: 'Progressivism',
-    2: 'Moderate'
-}
-
-# Print manually added ideologies
-print("Manually added ideologies:")
-for key, value in manual_ideologies.items():
-    print(f"Ideology class {key}: {value}")
-
-# Load pre-trained BERT model and tokenizer from Hugging Face
-print("Loading BERT model and tokenizer...")
-model_name = 'bert-base-uncased'
-tokenizer = BertTokenizer.from_pretrained(model_name)
-model = BertForSequenceClassification.from_pretrained(model_name, num_labels=K)
+    return corpus, labels
 
 # Create a custom Dataset for fine-tuning
 class IdeologyDataset(Dataset):
@@ -108,118 +80,129 @@ class IdeologyDataset(Dataset):
         text = self.texts[idx]
         label = self.labels[idx]
         inputs = self.tokenizer(text, max_length=self.max_length, padding="max_length", truncation=True, return_tensors="pt")
-        inputs = {key: val.squeeze(0) for key, val in inputs.items()}  # Remove batch dimension
-        inputs['labels'] = torch.tensor(label, dtype=torch.long)
+        inputs = {key: val.squeeze(0).to(device) for key, val in inputs.items()}  # Move inputs to GPU
+        inputs['labels'] = torch.tensor(label, dtype=torch.long).to(device)
         return inputs
 
-# Map ideologies to integers
-ideology_map = {ideology: idx for idx, ideology in enumerate(set(ideologies))}
-labels = [ideology_map[ideology] for ideology in ideologies]
-
-# Split data into training and evaluation sets
-train_texts, train_labels = corpus[:int(0.8 * len(corpus))], labels[:int(0.8 * len(labels))]
-eval_texts, eval_labels = corpus[int(0.8 * len(corpus)):], labels[int(0.8 * len(labels)):]
-
-train_dataset = IdeologyDataset(train_texts, train_labels, tokenizer)
-eval_dataset = IdeologyDataset(eval_texts, eval_labels, tokenizer)
-
-# Fine-tune the BERT model
-training_args = TrainingArguments(
-    output_dir='./results',
-    num_train_epochs=5,
-    per_device_train_batch_size=8,
-    per_device_eval_batch_size=8,
-    warmup_steps=500,
-    weight_decay=0.01,
-    logging_dir='./logs',
-    logging_steps=10,
-    evaluation_strategy="epoch",
-)
-
-trainer = Trainer(
-    model=model,
-    args=training_args,
-    train_dataset=train_dataset,
-    eval_dataset=eval_dataset,
-)
-
-print("Starting fine-tuning...")
-trainer.train()
-print("Fine-tuning completed.")
-
-# Save the fine-tuned model and tokenizer
-model.save_pretrained('./saved_model')
-tokenizer.save_pretrained('./saved_model')
-print("Model and tokenizer saved.")
-
-# Function to identify the ideology from a given text using BERT
-def identify_ideology_bert(text):
-    print(f"Identifying ideology for text: {text[:50]}...")
-    inputs = tokenizer(text, return_tensors="pt", max_length=512, truncation=True, padding=True)
+# Function to identify the ideology from a given text using your fine-tuned BERT
+def identify_ideology_bert(text, model, tokenizer):
+    inputs = tokenizer(text, return_tensors="pt", max_length=512, truncation=True, padding=True).to(device)
+    model.to(device)
     outputs = model(**inputs)
     logits = outputs.logits
     predicted_class_id = logits.argmax().item()
-    ideology = manual_ideologies[predicted_class_id]
-    print(f"Identified ideology class: {predicted_class_id} ({ideology})")
-    return logits, predicted_class_id
+    alignment_prob = torch.nn.functional.softmax(logits, dim=1).max().item()
 
-# Function to ask "What is the ideology?" based on a transcript
-def ask_ideology(transcript):
-    logits, predicted_class_id = identify_ideology_bert(transcript)
-    ideology_label = manual_ideologies[predicted_class_id]
-    return ideology_label
+    ideologies = ["Pro-Israeli", "Pro-Palestine"]
+    return logits, predicted_class_id, ideologies[predicted_class_id], alignment_prob
 
-# Save benchmark data to CSV file
-csv_content = [
-    ["Text", "Expected Ideology"],
-    ["Support for Israeli settlements in the West Bank is crucial for security.", "Conservatism"],
-    ["Palestinian statehood should be recognized and supported by the international community.", "Progressivism"],
-    ["Economic cooperation between Israel and Palestine can lead to peace.", "Moderate"],
-    ["Military action is necessary to protect Israeli borders from threats.", "Conservatism"],
-    ["Human rights abuses against Palestinians must be addressed by global organizations.", "Progressivism"],
-    ["Negotiations are key to achieving a two-state solution and lasting peace.", "Moderate"],
-    ["The right of return for Palestinian refugees is a fundamental issue.", "Progressivism"],
-    ["Israel's military actions in Gaza are justified for self-defense.", "Conservatism"],
-    ["Climate change requires immediate global action and cooperation.", "Environmentalism"],
-    ["Economic policies should prioritize reducing inequality and poverty.", "Socialism"],
-    ["Free speech should be protected, even for controversial opinions.", "Libertarianism"],
-    ["Immigration should be restricted to preserve national security and culture.", "Conservatism"],
-    ["Healthcare is a basic human right and should be accessible to all.", "Progressivism"],
-    ["Government surveillance is necessary to prevent terrorism and crime.", "Authoritarianism"],
-    ["Education systems need reform to better prepare students for the future.", "Moderate"],
-    ["Environmental regulations should be loosened to promote economic growth.", "Conservatism"],
-    ["Support for traditional family values is essential for societal stability.", "Conservatism"],
-    ["Gun control laws are necessary to reduce gun violence.", "Progressivism"],
-    ["Welfare programs should be expanded to support those in need.", "Socialism"],
-    ["International trade agreements are crucial for economic growth.", "Moderate"]
-]
+# Function to compare with baseline BERT model and validate using GPT-2
+def compare_with_baseline(text, model, tokenizer):
+    _, _, my_model_ideology, _ = identify_ideology_bert(text, model, tokenizer)
+    gpt2_ideology = query_gpt2(text)
 
-csv_file_path = "benchmark_data.csv"
-with open(csv_file_path, mode='w', newline='') as file:
-    writer = csv.writer(file)
-    writer.writerows(csv_content)
+    print(f"My Model Ideology: {my_model_ideology}")
+    print(f"GPT-2 Ideology: {gpt2_ideology}")
 
-print(f"CSV file saved at {csv_file_path}")
+    if my_model_ideology != gpt2_ideology:
+        print("Discrepancy found between GPT-2 and my model. Using GPT-2 prediction.")
+        return gpt2_ideology
+    return my_model_ideology
 
-# Function to evaluate benchmark data from a CSV file
-def evaluate_benchmark_from_csv(csv_file_path):
-    with open(csv_file_path, mode='r') as file:
-        reader = csv.DictReader(file)
-        for row in reader:
-            text = row['Text']
-            expected_ideology = row['Expected Ideology']
-            predicted_ideology = ask_ideology(text)
-            print(f"Text: {text}")
-            print(f"Expected Ideology: {expected_ideology}")
-            print(f"Predicted Ideology: {predicted_ideology}")
-            print("Match" if expected_ideology == predicted_ideology else "Mismatch")
-            print("")
+# Function to evaluate the model performance
+def evaluate_model(eval_texts, eval_labels, model, tokenizer):
+    model.eval()
+    predictions = []
+    true_labels = []
+    for text, label in zip(eval_texts, eval_labels):
+        _, predicted_class_id, _, _ = identify_ideology_bert(text, model, tokenizer)
+        predictions.append(predicted_class_id)
+        true_labels.append(label)
 
-# Evaluate the benchmark using the CSV file
-evaluate_benchmark_from_csv(csv_file_path)
+    precision, recall, f1, _ = precision_recall_fscore_support(true_labels, predictions, average='weighted')
+    accuracy = accuracy_score(true_labels, predictions)
+    print(f"Precision: {precision}, Recall: {recall}, F1 Score: {f1}, Accuracy: {accuracy}")
+
+    conf_matrix = confusion_matrix(true_labels, predictions)
+    disp = ConfusionMatrixDisplay(confusion_matrix=conf_matrix, display_labels=["Pro-Israeli", "Pro-Palestine"])
+    disp.plot(cmap='Blues')
+    plt.show()
+
+# Dynamic Learning with Exploration and GPT-2 Feedback
+def dynamic_learning_with_gpt2(corpus, labels, model, tokenizer, epochs=5, exploration_threshold=0.50):
+    archive = defaultdict(list)
+    for epoch in range(epochs):
+        print(f"Dynamic Learning Epoch {epoch + 1}/{epochs}")
+        for text, label in zip(corpus, labels):
+            logits, predicted_class_id, ideology_label, alignment_prob = identify_ideology_bert(text, model, tokenizer)
+
+            if is_novel(logits.detach().cpu().numpy(), archive[ideology_label], exploration_threshold):
+                archive[ideology_label].append(logits.detach().cpu().numpy())
+
+            final_ideology = compare_with_baseline(text, model, tokenizer)
+
+            if final_ideology != ideology_label:
+                print(f"Updating model based on feedback for: {text}")
+                corpus.append(text)
+                labels.append(label)
+
+                train_texts, eval_texts, train_labels, eval_labels = train_test_split(corpus, labels, test_size=0.2, random_state=42)
+                train_dataset = IdeologyDataset(train_texts, train_labels, tokenizer)
+                trainer.train_dataset = train_dataset
+                trainer.train()
+
+    print("Dynamic learning with GPT-2 feedback completed.")
 
 if __name__ == "__main__":
-    # Example text input for real-time ideology identification
-    text = input("Enter a text to identify its ideology: ")
-    ideology = ask_ideology(text)
-    print(f"\nIdeology of the given text: {ideology}")
+    # Load the corpus and labels from the text file
+    corpus, labels = load_corpus_and_labels('transcript_benchmark.txt')
+
+    print(f"Loaded {len(corpus)} samples.")
+
+    # Load pre-trained BERT model and tokenizer from Hugging Face
+    print("Loading BERT model and tokenizer...")
+    model_name = 'bert-base-uncased'
+    tokenizer = BertTokenizer.from_pretrained(model_name)
+    model = BertForSequenceClassification.from_pretrained(model_name, num_labels=2).to(device)
+
+    # Split data into training and evaluation sets
+    train_texts, eval_texts, train_labels, eval_labels = train_test_split(corpus, labels, test_size=0.2, random_state=42)
+
+    train_dataset = IdeologyDataset(train_texts, train_labels, tokenizer)
+    eval_dataset = IdeologyDataset(eval_texts, eval_labels, tokenizer)
+
+    # Fine-tune the BERT model
+    training_args = TrainingArguments(
+        output_dir='./results',
+        num_train_epochs=5,
+        per_device_train_batch_size=4,
+        per_device_eval_batch_size=4,
+        warmup_steps=50,
+        weight_decay=0.01,
+        logging_dir='./logs',
+        logging_steps=10,
+        evaluation_strategy="epoch",
+        fp16=True,  # Enable mixed precision training
+    )
+
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+    )
+
+    print("Starting fine-tuning...")
+    trainer.train()
+    print("Fine-tuning completed.")
+
+    # Save the fine-tuned model and tokenizer
+    model.save_pretrained('./saved_model')
+    tokenizer.save_pretrained('./saved_model')
+    print("Model and tokenizer saved.")
+
+    # Evaluate the model
+    evaluate_model(eval_texts, eval_labels, model, tokenizer)
+
+    # Execute dynamic learning with GPT-2 feedback
+    dynamic_learning_with_gpt2(corpus, labels, model, tokenizer)
