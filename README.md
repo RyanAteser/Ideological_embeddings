@@ -1,45 +1,68 @@
-# Ideological_embeddings
+SO here is my contribution to Dugree. First and for most, My model should not be used until there are alot of transcripts
+I would say at least 10-15 debate transcripts from launch to ensure proper training. The issue im having is that debates
+are very nuanced and data lead to data leakage "training both sides but both sides get the same data injected. For example,
+conversations that don't have any real data that can be used like "your points are valid where you say {here}". So! in the mean-time I provided you with 2 llm models that
+I think you can use in place. GPT-4 if you want to you use it you need there API key. and LLAMA! Even after this internship
+if you need any help please contact me with anything!
 
-Objective:
-The primary goal of the ideological embeddings model is to uncover and represent the ideological positions of individuals based on their interactions with various content. This content, in the form of textual documents, encompasses a wide range of ideological statements, including political opinions, social values, and policy stances.
+Here is an overview of my model.
+Overview:
+This code uses a BERT model for classifying debate transcripts into ideologies such as Pro-Palestinian or Pro-Israeli. The code addresses some key issues like data labeling, class imbalance, and exporting the trained model to ONNX for optimized inference.
 
-Data Collection:
-The model uses a corpus of textual documents as its input. Each document represents a statement or opinion related to different ideological topics, such as economic policies, social issues, environmental concerns, or geopolitical conflicts. The expanded corpus includes diverse viewpoints to capture a broad spectrum of ideologies.
+Detailed Explanation of Key Sections:
+1. Data Loading and Labeling
+Debate Data: The function load_debate_data reads from a file and labels sentences based on the speaker’s identity. It assumes that certain speakers are always Pro-Israeli or Pro-Palestinian, which is a good starting point for labeling but may need more nuance (e.g., based on statement content rather than speaker identity).
 
-Text Preprocessing:
-Before analysis, the text undergoes preprocessing using the CountVectorizer from the sklearn library. This step involves:
+Predefined Statements: Similarly, load_predefined_statements loads labeled sentences from a file with explicit labels like "Pro-Palestine" or "Pro-Israeli." This dataset complements the debate data, helping the model learn from explicit cases.
 
-Tokenization: Splitting text into individual words or tokens.
-Stop Words Removal: Filtering out common words (like "and," "the," etc.) that do not contribute to the ideological meaning.
-Vectorization: Converting the text into a matrix of token counts, where each row represents a document and each column represents a unique word from the corpus.
-Topic Modeling:
-The model employs Latent Dirichlet Allocation (LDA), a generative probabilistic model, to identify latent topics within the corpus. LDA assumes that each document is a mixture of topics, and each topic is characterized by a distribution over words. The key steps include:
+2. Tokenization:
+The BERT tokenizer is used to transform text into tokenized input suitable for the model. You map this function over the dataset, padding/truncating the inputs to a max length of 128 tokens.
 
-Determining Topics: LDA processes the document-term matrix to identify K distinct topics, where K is predefined (in this case, set to 5).
-Extracting Topic Words: For each topic, LDA identifies the most significant words that characterize the topic. These words help in interpreting the nature of each topic.
-Simulating User Interactions:
-To model user ideologies, the framework simulates user interactions with the documents:
+3. Model and Class Weights:
+You’re using the BertForSequenceClassification model with two labels (Pro-Palestinian and Pro-Israeli).
+Class weights are defined but currently balanced ([1.0, 1.0]). If there’s an imbalance in your data (e.g., more Pro-Israeli than Pro-Palestinian), you can adjust these weights accordingly to avoid bias during training.
+4. Loss Function:
+The weighted_loss function is defined to compute the loss with the specified class weights. It's based on the CrossEntropyLoss from PyTorch.
 
-User-Document Interactions: Each user is randomly associated with a subset of documents, representing their exposure or engagement with specific ideological content.
-User Network Simulation: An adjacency matrix (E) is created to simulate the network of users, indicating which users are connected or influenced by each other.
-Ideological Embeddings:
-The core of the model involves calculating ideological embeddings, represented by two matrices:
+5. Training Arguments:
+The training is set up with early stopping (patience of 2 epochs) and model regularization using weight decay (0.01) to avoid overfitting.
+Evaluation Strategy: You’re saving and evaluating the model at each epoch, which ensures that you get the best-performing model at the end.
+6. Metrics:
+You compute common classification metrics: accuracy, precision, recall, and F1-score, using the precision_recall_fscore_support function from sklearn.
 
-Polarities (phi): This matrix captures the alignment of each user with the identified topics. Each element in the matrix indicates the degree to which a user aligns with a particular topic.
-Interests (theta): This matrix indicates the level of interest each user has in the topics. Higher values suggest stronger engagement or concern with the topic.
-Training Process:
-The model iteratively updates the phi and theta matrices using a gradient ascent approach:
+7. Trainer API:
+Hugging Face’s Trainer class is used to handle the training loop, saving models, and evaluation. It’s designed to make fine-tuning models easy, and you have integrated data collation and early stopping.
 
-Alignment Probability: The function alignment_probability calculates the probability that two users align ideologically on a specific topic, based on their phi values.
-Updating Matrices: For each epoch, the model updates the phi and theta matrices based on observed user-document interactions and negative sampling (to account for unobserved interactions).
-Visualization and Interpretation:
-The final step involves visualizing the ideological embeddings:
+8. Model Saving and ONNX(GROQ) Export:
+After training, the model is saved using save_pretrained to allow for easy reuse.
 
-2D Visualization: Users are plotted in a 2D space using the first two dimensions of the phi matrix. Each point represents a user, positioned according to their ideological stance.
-Interpreting Positions: The visualization helps in understanding the relative ideological positions of users, with closer points indicating similar ideologies.
-Applications and Insights:
-This model provides several valuable insights:
+The model is then exported to the ONNX format, which is optimized for serving and inference on different hardware backends (like CPUs, GPUs, or specialized hardware). This will allow Dugree to deploy the model efficiently in production.
+Additions You Can Consider:
+1. Handling Neutral Class:
+Right now, you only have two classes: Pro-Palestinian and Pro-Israeli. If you want to classify "Neutral" statements as well, you’ll need to update:
 
-Identifying Ideological Clusters: The model can reveal clusters of users with similar ideological positions, useful for understanding group dynamics.
-Topic Influence Analysis: By examining the theta values, one can assess which topics are most engaging or polarizing among users.
-Comparative Analysis: The model enables comparisons between different user groups or across different topics, highlighting areas of consensus or division.
+Model: Change num_labels=2 to num_labels=3 in the BertForSequenceClassification model.
+Labels: You need to add a label 2 for neutral statements in your dataset, wherever appropriate.
+This will make your model more adaptable to debates where some statements are not strongly aligned with either ideology.
+
+2. Data Augmentation:
+To reduce the risk of overfitting, especially with a small dataset, you can implement data augmentation techniques like paraphrasing, back-translation, or adding noise to your dataset. This will help the model generalize better when it encounters new debate transcripts.
+
+3. Cross-Validation:
+To ensure model robustness, consider using cross-validation during training. This splits the data into multiple folds and trains the model multiple times, ensuring the model performs well across different subsets of the data.
+
+4. Experiment with Class Imbalance:
+If you notice any class imbalance between Pro-Palestinian and Pro-Israeli statements, adjust your class_weights accordingly. For example, if Pro-Palestinian statements are underrepresented, you can assign a higher weight to that class.
+
+
+class_weights = torch.tensor([1.5, 1.0, 1.2]).to('cuda')  # Adjusted for imbalance
+5. Incorporating Contextual Information:
+Debates often rely on context from previous statements. To capture this, you could modify your model to consider multiple sentences or statements at once (like a sequence-to-sequence classification or hierarchical model). This can give the model better understanding of the full flow of conversation.
+
+6. Post-Processing Predictions:
+After the model predicts the ideology of individual statements, you can apply smoothing techniques to ensure consistent predictions for a given speaker. For example, if a speaker predominantly makes Pro-Israeli statements, it’s unlikely that they would switch suddenly to Pro-Palestinian.
+
+7. Serving the Model:
+Once you have the ONNX export, you can serve the model using frameworks like ONNX Runtime for faster inference. This could be integrated into Dugree’s platform to run classifications on new transcripts in real-time or batch processes.
+
+With enhancements like handling the neutral class, cross-validation, and better class balancing, the model can become more robust. Using ONNX for deployment ensures it will run efficiently in production, allowing you to process real-world debate transcripts as they accumulate.
